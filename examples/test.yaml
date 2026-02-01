@@ -1,0 +1,7 @@
+transacciones:
+  - monto: 100
+    descripcion: Transacción 1
+  - monto: 200
+    descripcion: Transacción 2
+  - monto: 300
+    descripcion: Transacción 3

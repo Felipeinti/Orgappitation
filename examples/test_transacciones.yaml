@@ -1,0 +1,21 @@
+transacciones:
+  - monto: 50000
+    descripcion: Sueldo enero
+    categoria: work
+    es_ingreso: true
+  
+  - monto: 45000
+    descripcion: Alquiler
+    categoria: housing
+    tipo_gasto: fixed
+  
+  - monto: 5000
+    descripcion: Supermercado Carrefour
+    categoria: food
+    metodo_pago: tarjeta_credito
+    fuente_dinero: Tarjeta Canadá
+  
+  - monto: 200
+    descripcion: Café
+    categoria: food
+    metodo_pago: efectivo

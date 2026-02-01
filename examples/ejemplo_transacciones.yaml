@@ -1,0 +1,44 @@
+# Ejemplo de archivo de transacciones
+# Puedes tener múltiples transacciones en un solo archivo
+
+transacciones:
+  # Gasto simple
+  - monto: 5000
+    descripcion: Supermercado Carrefour
+    categoria: comida
+    tipo_gasto: variable
+    metodo_pago: tarjeta_debito
+    fuente_dinero: Tarjeta Argentina
+
+  # Gasto con tarjeta de crédito
+  - monto: 12000
+    descripcion: Cena en restaurante
+    categoria: comida
+    tipo_gasto: variable
+    metodo_pago: tarjeta_credito
+    fuente_dinero: Tarjeta Canadá
+
+  # Gasto fijo
+  - monto: 45000
+    descripcion: Alquiler mes enero
+    categoria: vivienda
+    tipo_gasto: fijo
+    metodo_pago: transferencia
+
+  # Gasto en efectivo
+  - monto: 300
+    descripcion: Propina
+    metodo_pago: efectivo
+
+  # Ingreso
+  - monto: 150000
+    es_ingreso: true
+    descripcion: Sueldo enero
+    categoria: trabajo
+
+  # Gasto con MercadoPago
+  - monto: 8500
+    descripcion: Compra en línea
+    categoria: varios
+    metodo_pago: transferencia
+    fuente_dinero: MercadoPago
