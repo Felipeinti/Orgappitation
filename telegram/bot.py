@@ -10,6 +10,7 @@ import json
 import requests
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from openai import OpenAI
 
 # Cargar variables de entorno
 def load_env():
@@ -27,6 +28,7 @@ load_env()
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 LLM_API_URL = os.environ.get('LLM_API_URL', '')
 FINANZAS_API_KEY = os.environ.get('FINANZAS_API_KEY', '')
+OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', '')
 
 if not TELEGRAM_TOKEN:
     print("❌ TELEGRAM_BOT_TOKEN no configurado en .env")
@@ -37,10 +39,23 @@ if not LLM_API_URL:
     print("⚠️  LLM_API_URL no configurado - modo sin LLM")
     print("   Para usar LLM: Despliega llm_service_modal.py y agrega LLM_API_URL en .env")
 
+if not OPENAI_API_KEY:
+    print("⚠️  OPENAI_API_KEY no configurado - audio no funcionará")
+    print("   Agrega tu OpenAI API key para usar Whisper")
+
+# Inicializar cliente OpenAI para Whisper
+openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Comando /start"""
     llm_status = "✅ Conectado" if LLM_API_URL else "❌ Sin configurar"
+    
+    voice_status = "✅ Whisper habilitado" if openai_client else "❌ Sin configurar"
+    
+    # Mostrar chat_id para configurar shortcuts
+    chat_id = update.effective_chat.id
+    print(f"📱 Chat ID del usuario: {chat_id}")
     
     await update.message.reply_text(
         "💰 *Bot de Finanzas Personales*\n\n"
@@ -50,6 +65,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "   • \"Gasté 5000 en café\"\n"
         "   • \"Pagué 45000 de alquiler\"\n"
         "   • \"Me llegó el sueldo de 200000\"\n\n"
+        "🎤 Mensajes de voz:\n"
+        "   ¡Ahora puedes enviar audios!\n"
+        "   El bot transcribe y procesa automáticamente\n"
+        "   Perfecto para usar con Action Button del iPhone\n\n"
         "📝 Comandos manuales:\n"
         "   `/gastar <monto> <descripcion>` - Registrar gasto\n"
         "   `/ingreso <monto> <descripcion>` - Registrar ingreso\n\n"
@@ -59,7 +78,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🗑️ Otros:\n"
         "   `/limpiar` - Borrar todas las transacciones\n"
         "   `/help` - Ver esta ayuda\n\n"
-        f"🧠 LLM: {llm_status}",
+        f"🧠 LLM: {llm_status}\n"
+        f"🎤 Audio: {voice_status}\n\n"
+        f"🆔 Tu Chat ID: `{chat_id}`\n"
+        f"_(Úsalo en Shortcuts de iOS)_",
         parse_mode='Markdown'
     )
 
@@ -297,6 +319,195 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await start(update, context)
 
 
+async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Maneja mensajes de voz
+    Transcribe con Whisper y procesa como texto
+    """
+    if not openai_client:
+        await update.message.reply_text(
+            "⚠️ Whisper no configurado. Agrega OPENAI_API_KEY en .env"
+        )
+        return
+    
+    if not LLM_API_URL:
+        await update.message.reply_text(
+            "⚠️ LLM no configurado. Configura LLM_API_URL en .env"
+        )
+        return
+    
+    try:
+        # Indicar que está procesando
+        await update.message.reply_text("🎤 Transcribiendo audio...")
+        
+        # Obtener archivo de voz
+        voice = update.message.voice
+        file = await context.bot.get_file(voice.file_id)
+        
+        # Descargar audio temporalmente
+        audio_path = f"/tmp/voice_{voice.file_id}.ogg"
+        await file.download_to_drive(audio_path)
+        
+        # Transcribir con Whisper
+        with open(audio_path, 'rb') as audio_file:
+            transcript = openai_client.audio.transcriptions.create(
+                model="whisper-1",
+                file=audio_file,
+                language="es"  # Español
+            )
+        
+        # Limpiar archivo temporal
+        os.remove(audio_path)
+        
+        texto_transcrito = transcript.text
+        
+        # Mostrar transcripción
+        await update.message.reply_text(
+            f"📝 *Transcripción:*\n_{texto_transcrito}_",
+            parse_mode='Markdown'
+        )
+        
+        # Procesar el texto transcrito con el LLM (igual que texto normal)
+        await update.message.reply_text("🧠 Procesando con LLM...")
+        
+        # Llamar al LLM service
+        response = requests.post(
+            LLM_API_URL,
+            json={
+                "text": texto_transcrito,
+                "api_key": FINANZAS_API_KEY,
+            },
+            timeout=30
+        )
+        
+        if response.status_code != 200:
+            await update.message.reply_text(
+                f"❌ Error del LLM: HTTP {response.status_code}"
+            )
+            return
+        
+        result = response.json()
+        
+        if not result.get("success"):
+            await update.message.reply_text(
+                f"❌ LLM falló: {result.get('error', 'Unknown error')}"
+            )
+            return
+        
+        yaml_output = result.get("yaml_output", "")
+        tokens_info = result.get("tokens", {})
+        
+        if not yaml_output:
+            await update.message.reply_text("❌ LLM no generó YAML válido")
+            return
+        
+        # Detectar múltiples transacciones
+        yaml_docs = yaml_output.split('\n---\n')
+        num_transactions = len(yaml_docs)
+        
+        # Mostrar YAML generado COMPLETO para validación
+        await update.message.reply_text(
+            f"📝 *{num_transactions} transacción(es) detectada(s)*\n\n"
+            f"🔍 *YAML generado por el LLM:*",
+            parse_mode='Markdown'
+        )
+        
+        # Enviar el YAML completo
+        if len(yaml_output) <= 4000:
+            await update.message.reply_text(
+                f"```yaml\n{yaml_output}\n```",
+                parse_mode='Markdown'
+            )
+        else:
+            # Dividir por transacciones si es muy largo
+            for i, yaml_doc in enumerate(yaml_docs, 1):
+                yaml_doc_stripped = yaml_doc.strip()
+                if yaml_doc_stripped:
+                    await update.message.reply_text(
+                        f"```yaml\n# Transacción {i}\n{yaml_doc_stripped}\n```",
+                        parse_mode='Markdown'
+                    )
+        
+        # Procesar transacciones
+        import yaml
+        successful = []
+        failed = []
+        
+        for i, yaml_doc in enumerate(yaml_docs, 1):
+            yaml_doc = yaml_doc.strip()
+            if not yaml_doc:
+                continue
+            
+            try:
+                data = yaml.safe_load(yaml_doc)
+                if not data or 'monto' not in data:
+                    failed.append(f"Transacción {i}: falta campo 'monto'")
+                    continue
+                
+                # Enviar a Modal API
+                ingest_result = subprocess.run(
+                    ['python', 'cli/yaml_to_modal.py', '--yaml', yaml_doc],
+                    capture_output=True,
+                    text=True,
+                    timeout=30
+                )
+                
+                if ingest_result.returncode == 0:
+                    monto = data.get('monto', 0)
+                    descripcion = data.get('descripcion', 'Sin descripción')
+                    es_ingreso = data.get('es_ingreso', False)
+                    categoria = data.get('categoria', '')
+                    
+                    successful.append({
+                        'monto': monto,
+                        'descripcion': descripcion,
+                        'es_ingreso': es_ingreso,
+                        'categoria': categoria
+                    })
+                else:
+                    failed.append(f"Transacción {i}: {ingest_result.stderr[:100]}")
+            
+            except Exception as e:
+                failed.append(f"Transacción {i}: {str(e)[:100]}")
+        
+        # Generar resumen
+        if successful:
+            msg = f"🎤 *{len(successful)} transacción(es) desde audio:*\n\n"
+            
+            total_gastos = 0
+            total_ingresos = 0
+            
+            for tx in successful:
+                tipo_emoji = "💵" if tx['es_ingreso'] else "💸"
+                cat_text = f" ({tx['categoria']})" if tx['categoria'] else ""
+                msg += f"{tipo_emoji} ${tx['monto']:,.0f} - {tx['descripcion']}{cat_text}\n"
+                
+                if tx['es_ingreso']:
+                    total_ingresos += tx['monto']
+                else:
+                    total_gastos += tx['monto']
+            
+            balance_neto = total_ingresos - total_gastos
+            balance_emoji = "📈" if balance_neto > 0 else "📉" if balance_neto < 0 else "➖"
+            
+            msg += f"\n{balance_emoji} *Balance neto: "
+            if balance_neto > 0:
+                msg += f"+${balance_neto:,.0f}*"
+            elif balance_neto < 0:
+                msg += f"${balance_neto:,.0f}*"
+            else:
+                msg += f"${balance_neto:,.0f}*"
+            
+            await update.message.reply_text(msg, parse_mode='Markdown')
+        
+        if failed:
+            error_msg = "⚠️ *Errores:*\n\n" + "\n".join(failed)
+            await update.message.reply_text(error_msg, parse_mode='Markdown')
+    
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error procesando audio: {e}")
+
+
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Maneja mensajes de texto libres (sin comando)
@@ -353,12 +564,29 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         yaml_docs = yaml_output.split('\n---\n')
         num_transactions = len(yaml_docs)
         
-        # Mostrar YAML generado (truncado si es muy largo)
-        yaml_preview = yaml_output if len(yaml_output) < 500 else yaml_output[:500] + "\n..."
+        # Mostrar YAML generado COMPLETO para validación
         await update.message.reply_text(
-            f"📝 *{num_transactions} transacción(es) detectada(s)*\n```yaml\n{yaml_preview}\n```",
+            f"📝 *{num_transactions} transacción(es) detectada(s)*\n\n"
+            f"🔍 *YAML generado por el LLM:*",
             parse_mode='Markdown'
         )
+        
+        # Enviar el YAML completo en un mensaje separado
+        # Si es muy largo, dividir en múltiples mensajes
+        if len(yaml_output) <= 4000:
+            await update.message.reply_text(
+                f"```yaml\n{yaml_output}\n```",
+                parse_mode='Markdown'
+            )
+        else:
+            # Dividir por transacciones si es muy largo
+            for i, yaml_doc in enumerate(yaml_docs, 1):
+                yaml_doc = yaml_doc.strip()
+                if yaml_doc:
+                    await update.message.reply_text(
+                        f"```yaml\n# Transacción {i}\n{yaml_doc}\n```",
+                        parse_mode='Markdown'
+                    )
         
         # Procesar cada transacción
         import yaml
@@ -476,9 +704,13 @@ def main():
     # Handler para texto libre (usa LLM)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     
+    # Handler para mensajes de voz (usa Whisper + LLM)
+    app.add_handler(MessageHandler(filters.VOICE, handle_voice))
+    
     print("✅ Bot iniciado!")
     print("   Busca tu bot en Telegram y envía /start")
     print("   Escribe en lenguaje natural para usar el LLM")
+    print("   🎤 También puedes enviar mensajes de voz!")
     print("   Presiona Ctrl+C para detener\n")
     
     app.run_polling()
